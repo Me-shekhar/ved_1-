@@ -1,6 +1,7 @@
 # backend/app.py
 import json
 import logging
+import math
 import os
 import uuid
 from datetime import datetime
@@ -10,7 +11,7 @@ from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory
 from PIL import Image
 
-from decision_tree import classify_label
+from decision_tree import classify_label, build_risk_profile
 from gemini_client import send_to_gemini
 
 
@@ -48,6 +49,112 @@ def _append_history(entry):
     # keep latest 100 entries
     _write_history(history[:100])
 
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_context(flask_request):
+    raw_context = flask_request.form.get("context")
+    payload = {}
+    if raw_context:
+        try:
+            payload = json.loads(raw_context)
+        except json.JSONDecodeError:
+            LOGGER.warning("Invalid context payload; ignoring.")
+
+    dwell_hours = _safe_float(payload.get("dwell_time_hours"), 0.0)
+    dwell_days = payload.get("dwell_time_days")
+    if not isinstance(dwell_days, (int, float)):
+        dwell_days = dwell_hours / 24.0 if dwell_hours else 0.0
+
+    patient_factors = payload.get("patient_factors")
+    if not isinstance(patient_factors, dict):
+        patient_factors = {}
+
+    line_day_index = payload.get("line_day_index")
+    if not isinstance(line_day_index, int):
+        line_day_index = math.ceil(dwell_hours / 24.0) if dwell_hours else None
+
+    context = {
+        "capture_type": str(payload.get("capture_type") or "catheter_site"),
+        "capture_slot_label": str(payload.get("capture_slot_label") or ""),
+        "event_marker": payload.get("event_marker"),
+        "dwell_time_hours": dwell_hours,
+        "dwell_time_days": dwell_days,
+        "line_day_index": line_day_index,
+        "traction_alerts": _safe_int(payload.get("traction_alerts"), 0),
+        "traction_yellow_events": _safe_int(payload.get("traction_yellow_events"), 0),
+        "traction_status": str(payload.get("traction_status") or "").lower(),
+        "patient_factors": patient_factors,
+        "night_mode": bool(payload.get("night_mode")),
+        "picture_failed": bool(payload.get("picture_failed")),
+    }
+    return context
+
+
+def _calculate_analytics(entries):
+    if not entries:
+        return {
+            "clabsi_rate": 0.0,
+            "line_days": 0,
+            "clabsi_cases": 0,
+            "dressing_events": 0,
+            "catheter_events": 0,
+            "traction_alerts_total": 0,
+        }
+
+    unique_days = set()
+    clabsi_cases = 0
+    dressing_events = 0
+    catheter_events = 0
+    traction_alerts_total = 0
+
+    for entry in entries:
+        context = entry.get("context") or {}
+        risk_profile = entry.get("risk_profile") or {}
+
+        day_index = context.get("line_day_index")
+        if isinstance(day_index, int) and day_index > 0:
+            unique_days.add(day_index)
+
+        if (entry.get("event_marker") or context.get("event_marker")) == "dressing_change":
+            dressing_events += 1
+        if (entry.get("event_marker") or context.get("event_marker")) == "catheter_change":
+            catheter_events += 1
+
+        traction_alerts_total += _safe_int(risk_profile.get("traction_alerts"), 0)
+
+        if (risk_profile.get("risk_tier") or "").lower() == "high":
+            clabsi_cases += 1
+
+    # Fallback to number of entries if day tracking missing
+    line_days = len(unique_days) or len(entries)
+    clabsi_rate = clabsi_cases / line_days if line_days else 0.0
+
+    return {
+        "clabsi_rate": round(clabsi_rate, 3),
+        "line_days": line_days,
+        "clabsi_cases": clabsi_cases,
+        "dressing_events": dressing_events,
+        "catheter_events": catheter_events,
+        "traction_alerts_total": traction_alerts_total,
+    }
+
 app = Flask(__name__, static_folder="../frontend", static_url_path="/")
 
 @app.route("/")
@@ -58,6 +165,8 @@ def index():
 def analyze():
     request_id = str(uuid.uuid4())
     LOGGER.info("[%s] Analyze request received", request_id)
+    history_snapshot = _load_history()
+    previous_entry = history_snapshot[0] if history_snapshot else None
 
     if 'image' not in request.files:
         LOGGER.warning("[%s] No image in request", request_id)
@@ -89,12 +198,21 @@ def analyze():
         LOGGER.warning("[%s] Failed to preprocess image: %s", request_id, exc)
         img_bytes = raw_bytes
 
+    context = _parse_context(request)
+
     try:
         gemini_result = send_to_gemini(img_bytes, filename)
         classification = classify_label(gemini_result)
     except Exception as exc:
         LOGGER.exception("[%s] Analysis failed", request_id)
         return jsonify({"error": "Analysis failed", "details": str(exc)}), 500
+
+    risk_profile = build_risk_profile(
+        gemini_result.get("features", {}),
+        classification,
+        context,
+        previous_entry,
+    )
 
     stored_filename = f"{request_id}.jpg"
     try:
@@ -112,6 +230,9 @@ def analyze():
         "original_filename": filename,
         "classification": classification,
         "gemini": gemini_result,
+        "context": context,
+        "event_marker": context.get("event_marker"),
+        "risk_profile": risk_profile,
     }
     try:
         _append_history(history_entry)
@@ -123,6 +244,8 @@ def analyze():
         "gemini": gemini_result,
         "classification": classification,
         "history_entry": history_entry,
+        "risk_profile": risk_profile,
+        "context": context,
     }
     LOGGER.info("[%s] Analysis complete with label %s", request_id, classification["label"])
     return jsonify(response), 200
@@ -130,7 +253,11 @@ def analyze():
 
 @app.route("/history", methods=["GET"])
 def history():
-    return jsonify(_load_history())
+    entries = _load_history()
+    return jsonify({
+        "entries": entries,
+        "analytics": _calculate_analytics(entries),
+    })
 
 
 @app.route("/history/image/<path:filename>")
