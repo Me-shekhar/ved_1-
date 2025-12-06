@@ -1,0 +1,36 @@
+{
+  "name": "cathshield-ai",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "prepare": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "5.19.0",
+    "date-fns": "3.6.0",
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "swr": "2.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "20.16.2",
+    "@types/react": "18.3.5",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "10.4.20",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.5",
+    "postcss": "8.4.45",
+    "prisma": "5.19.0",
+    "tailwindcss": "3.4.10",
+    "tsx": "4.19.1",
+    "typescript": "5.6.3"
+  }
+}

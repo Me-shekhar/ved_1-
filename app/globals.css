@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply font-sans bg-slate-50 text-slate-900;
+}
+
+.card {
+  @apply rounded-2xl bg-white shadow-sm p-4 space-y-3;
+}
+
+button:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}

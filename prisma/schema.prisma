@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum ImageType {
+  catheter_site
+  traction_module
+}
+
+enum CaptureStatus {
+  success
+  failed
+}
+
+enum AlertSeverity {
+  info
+  warning
+  critical
+}
+
+enum AlertType {
+  traction
+  dressing_failure
+  high_clabsi
+  high_venous_resistance
+  resource_shortage
+}
+
+enum RiskBand {
+  green
+  yellow
+  red
+}
+
+model Patient {
+  id               String        @id @default(cuid())
+  bedNumber        String
+  initials         String
+  insertionDate    DateTime
+  wardId           String?
+  patientFactors   Json
+  safetyChecklist  Json
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  consents         Consent[]
+  imageCaptures    ImageCapture[]
+  shiftEvents      ShiftEvents[]
+  riskSnapshots    RiskSnapshot[]
+  alerts           Alert[]
+}
+
+model Consent {
+  id                  String   @id @default(cuid())
+  patientId           String
+  audioPlayed         Boolean
+  audioLanguageUsed   String
+  playbackFinishedAt  DateTime
+  createdAt           DateTime @default(now())
+
+  patient             Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model ImageCapture {
+  id            String        @id @default(cuid())
+  patientId     String
+  timestamp     DateTime      @default(now())
+  imageType     ImageType
+  imageUrl      String        @db.LongText
+  captureStatus CaptureStatus
+  notes         String?
+
+  patient       Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model ShiftEvents {
+  id                 String   @id @default(cuid())
+  patientId          String
+  periodStart        DateTime
+  periodEnd          DateTime
+  tractionPullsYellow Int      @default(0)
+  tractionPullsRed    Int      @default(0)
+  dressingChanged     Boolean  @default(false)
+  catheterChanged     Boolean  @default(false)
+  flushingDone        Boolean  @default(false)
+
+  patient            Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model RiskSnapshot {
+  id                             String   @id @default(cuid())
+  patientId                      String
+  capturedAt                     DateTime @default(now())
+  clisaScore                     Int
+  predictiveClabsiScore          Int
+  predictiveClabsiBand           RiskBand
+  predictiveVenousResistanceBand RiskBand
+  recommendedAction              String
+  tractionPullsYellow            Int
+  tractionPullsRed               Int
+
+  patient                        Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model Alert {
+  id                 String       @id @default(cuid())
+  patientId          String?
+  type               AlertType
+  reason             String
+  severity           AlertSeverity
+  recommendedAction  String
+  acknowledged       Boolean      @default(false)
+  createdAt          DateTime     @default(now())
+
+  patient            Patient?     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model WardMetrics {
+  id                   String    @id @default(cuid())
+  wardId               String
+  date                 DateTime
+  clabsiCases          Int
+  totalCentralLineDays Int
+  dressingChangeCount  Int
+  catheterChangeCount  Int
+  derivedRate          Float
+}
+
+model ResourceMetric {
+  id                   String   @id @default(cuid())
+  wardId               String
+  date                 DateTime @default(now())
+  patientsNeeding      Int
+  availableDressings   Int
+  availableCatheters   Int
+  dressingsDeficitRate Float
+  cathetersDeficitRate Float
+  combinedRate         Float
+  band                 RiskBand
+}
